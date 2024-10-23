@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import BinaryIO, Dict, List, Optional, Union
 
 import numpy as np
+import mitsuba as mi
 
 from .ply_util import write_ply
 
@@ -13,6 +14,70 @@ def preprocess(data, channel):
     if channel in COLORS:
         return np.round(data * 255.0)
     return data
+
+
+# https://github.com/hasancaslan/BeautifulPointCloud
+class XMLTemplates:
+    HEAD = """
+<scene version="0.6.0">
+    <integrator type="path">
+        <integer name="maxDepth" value="-1"/>
+    </integrator>
+    <sensor type="perspective">
+        <float name="farClip" value="100"/>
+        <float name="nearClip" value="0.1"/>
+        <transform name="toWorld">
+            <lookat origin="3,3,3" target="0,0,0" up="0,0,1"/>
+        </transform>
+        <float name="fov" value="25"/>
+        <sampler type="independent">
+            <integer name="sampleCount" value="256"/>
+        </sampler>
+        <film type="hdrfilm">
+            <integer name="width" value="1000"/>
+            <integer name="height" value="1000"/>
+            <rfilter type="gaussian"/>
+        </film>
+    </sensor>
+    
+    <bsdf type="roughplastic" id="surfaceMaterial">
+        <string name="distribution" value="ggx"/>
+        <float name="alpha" value="0.05"/>
+        <float name="intIOR" value="1.46"/>
+        <rgb name="diffuseReflectance" value="1,1,1"/> <!-- default 0.5 -->
+    </bsdf>
+"""
+    BALL_SEGMENT = """
+    <shape type="sphere">
+        <float name="radius" value="0.015"/>
+        <transform name="toWorld">
+            <translate x="{}" y="{}" z="{}"/>
+        </transform>
+        <bsdf type="diffuse">
+            <rgb name="reflectance" value="{},{},{}"/>
+        </bsdf>
+    </shape>
+"""
+    TAIL = """
+    <shape type="rectangle">
+        <ref name="bsdf" id="surfaceMaterial"/>
+        <transform name="toWorld">
+            <scale x="10" y="10" z="1"/>
+            <translate x="0" y="0" z="-0.5"/>
+        </transform>
+    </shape>
+    
+    <shape type="rectangle">
+        <transform name="toWorld">
+            <scale x="10" y="10" z="1"/>
+            <lookat origin="-4,4,20" target="0,0,0" up="0,0,1"/>
+        </transform>
+        <emitter type="area">
+            <rgb name="radiance" value="6,6,6"/>
+        </emitter>
+    </shape>
+</scene>
+"""
 
 
 @dataclass
@@ -172,3 +237,63 @@ class PointCloud:
                 k: np.concatenate([v, other.channels[k]], axis=0) for k, v in self.channels.items()
             },
         )
+    
+    @classmethod
+    def load_shapenet(cls, shapenet_dir, shapenet_uid):
+        path = f"{shapenet_dir}/{shapenet_uid}.npz"
+        with open(path, "rb") as f:
+            coords = np.load(f)["pointcloud"]
+        channels = {k: np.zeros_like(coords[:, 0], dtype=np.float32) for k in ["R", "G", "B"]}
+        return PointCloud(
+            coords=coords,
+            channels=channels,
+        )
+    
+    @staticmethod
+    def compute_xml_color(x, y, z):
+        vec = np.clip(np.array([x, y, z]), 0.001, 1.0)
+        vec /= np.linalg.norm(vec)
+        return vec
+    
+    def generate_xml_content(self, pcl):
+        xml_segments = [XMLTemplates.HEAD]
+        for point in pcl:
+            color = self.compute_xml_color(
+                point[0] + 0.5, point[1] + 0.5, point[2] + 0.5 - 0.0125)
+            xml_segments.append(XMLTemplates.BALL_SEGMENT.format(
+                point[0], point[1], point[2], *color))
+        xml_segments.append(XMLTemplates.TAIL)
+        return "".join(xml_segments)
+    
+    @staticmethod
+    def save_xml_content_to_file(output_file_path, xml_content):
+        xml_file_path = f"{output_file_path}.xml"
+        with open(xml_file_path, "w") as f:
+            f.write(xml_content)
+        return xml_file_path
+    
+    @staticmethod
+    def render_scene(xml_file_path):
+        mi.set_variant("scalar_rgb")
+        scene = mi.load_file(xml_file_path)
+        img = mi.render(scene)
+        return img
+
+    @staticmethod
+    def save_scene(output_file_path, rendered_scene):
+        mi.util.write_bitmap(f"{output_file_path}.png", rendered_scene)
+
+    def render(self, output_file_path, num_points=4096):
+        pcl = self.coords[np.random.choice(self.coords.shape[0], num_points, replace=False)]
+        center = np.mean(pcl, axis=0)
+        scale = np.amax(pcl - np.amin(pcl, axis=0))
+        pcl = ((pcl - center) / scale)
+        pcl = pcl[:, [2, 0, 1]]
+        pcl[:, 0] *= -1
+        pcl[:, 2] += 0.0125
+        pcl = pcl.astype(np.float32)
+    
+        xml_content = self.generate_xml_content(pcl)
+        xml_file_path = self.save_xml_content_to_file(output_file_path, xml_content)
+        rendered_scene = self.render_scene(xml_file_path)
+        self.save_scene(output_file_path, rendered_scene)

@@ -11,9 +11,11 @@ def plot_point_cloud(
     color: bool = True,
     grid_size: int = 1,
     fixed_bounds: Optional[Tuple[Tuple[float, float, float], Tuple[float, float, float]]] = (
-        (-0.75, -0.75, -0.75),
-        (0.75, 0.75, 0.75),
+        (-0.5, -0.5, -0.5),
+        (0.5, 0.5, 0.5),
     ),
+    theta_x: float = np.pi * 3 / 2,
+    theta_z: float = np.pi,
 ):
     """
     Render a point cloud as a plot to the given image path.
@@ -45,6 +47,26 @@ def plot_point_cloud(
                     ]
                 )
                 c = c @ rotation
+
+            if theta_x is not None:
+                rotation_x = np.array(
+                    [
+                        [1, 0, 0],
+                        [0, np.cos(theta_x), -np.sin(theta_x)],
+                        [0, np.sin(theta_x), np.cos(theta_x)]
+                    ]
+                )
+                c = c @ rotation_x
+            
+            if theta_z is not None:
+                rotation_z = np.array(
+                        [
+                            [np.cos(theta_z), -np.sin(theta_z), 0.0],
+                            [np.sin(theta_z), np.cos(theta_z), 0.0],
+                            [0.0, 0.0, 1.0],
+                        ]
+                )
+                c = c @ rotation_z
 
             ax.scatter(c[:, 0], c[:, 1], c[:, 2], **color_args)
 

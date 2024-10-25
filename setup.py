@@ -1,13 +1,14 @@
 from setuptools import setup
 
 setup(
-    name="point-e",
+    name="pepsi",
     packages=[
         "point_e",
         "point_e.diffusion",
         "point_e.evals",
         "point_e.models",
         "point_e.util",
+        "pepsi",
     ],
     install_requires=[
         "filelock",
@@ -22,6 +23,12 @@ setup(
         "scipy",
         "numpy",
         "clip @ git+https://github.com/openai/CLIP.git",
+        "wandb",
+        "pandas",
+        "pytorch_lightning",
+        "mitsuba",
+        "ailia",
+        "tensorboard",
     ],
     author="OpenAI",
 )

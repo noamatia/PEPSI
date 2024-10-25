@@ -2,15 +2,14 @@
 Helpers for sampling from a single- or multi-stage point cloud diffusion model.
 """
 
-from typing import Any, Callable, Dict, Iterator, List, Sequence, Tuple
-
 import torch
 import torch.nn as nn
-
+from pepsi.consts import GUIDANCE
 from point_e.util.point_cloud import PointCloud
-
 from .gaussian_diffusion import GaussianDiffusion
 from .k_diffusion import karras_sample_progressive
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
+from point_e.models.transformer import CLIPImageGridUpsamplePointDiffusionTransformer
 
 
 class PointCloudSampler:
@@ -87,16 +86,32 @@ class PointCloudSampler:
     def num_stages(self) -> int:
         return len(self.models)
 
-    def sample_batch(self, batch_size: int, model_kwargs: Dict[str, Any]) -> torch.Tensor:
+    def sample_batch(
+        self,
+        batch_size: int,
+        model_kwargs: Dict[str, Any],
+        prev_samples: Optional[torch.Tensor] = None,
+        guidances: Optional[List[torch.Tensor]] = None,
+    ) -> torch.Tensor:
         samples = None
-        for x in self.sample_batch_progressive(batch_size, model_kwargs):
+        for x in self.sample_batch_progressive(
+            batch_size, model_kwargs, prev_samples, guidances
+        ):
             samples = x
         return samples
 
     def sample_batch_progressive(
-        self, batch_size: int, model_kwargs: Dict[str, Any]
+        self,
+        batch_size: int,
+        model_kwargs: Dict[str, Any],
+        prev_samples: Optional[torch.Tensor] = None,
+        guidances: Optional[List[torch.Tensor]] = None,
     ) -> Iterator[torch.Tensor]:
-        samples = None
+        n = len(self.models)
+        if guidances is None:
+            guidances = [None] * n
+        assert len(guidances) == n
+        samples = prev_samples
         for (
             model,
             diffusion,
@@ -108,6 +123,7 @@ class PointCloudSampler:
             stage_sigma_max,
             stage_s_churn,
             stage_key_filter,
+            guidance,
         ) in zip(
             self.models,
             self.diffusions,
@@ -119,20 +135,38 @@ class PointCloudSampler:
             self.sigma_max,
             self.s_churn,
             self.model_kwargs_key_filter,
+            guidances,
         ):
+            if (
+                prev_samples is not None
+                and type(model) != CLIPImageGridUpsamplePointDiffusionTransformer
+            ):
+                continue
             stage_model_kwargs = model_kwargs.copy()
             if stage_key_filter != "*":
                 use_keys = set(stage_key_filter.split(","))
-                stage_model_kwargs = {k: v for k, v in stage_model_kwargs.items() if k in use_keys}
+                stage_model_kwargs = {
+                    k: v for k, v in stage_model_kwargs.items() if k in use_keys
+                }
             if samples is not None:
                 stage_model_kwargs["low_res"] = samples
             if hasattr(model, "cached_model_kwargs"):
-                stage_model_kwargs = model.cached_model_kwargs(batch_size, stage_model_kwargs)
+                stage_model_kwargs = model.cached_model_kwargs(
+                    batch_size, stage_model_kwargs
+                )
+            if guidance is not None:
+                assert model.guided, "Model must be guided to use guidance"
+                stage_model_kwargs[GUIDANCE] = guidance
             sample_shape = (batch_size, 3 + len(self.aux_channels), stage_num_points)
 
             if stage_guidance_scale != 1 and stage_guidance_scale != 0:
                 for k, v in stage_model_kwargs.copy().items():
-                    stage_model_kwargs[k] = torch.cat([v, torch.zeros_like(v)], dim=0)
+                    if k == GUIDANCE:
+                        stage_model_kwargs[k] = torch.cat([v, v], dim=0)
+                    else:
+                        stage_model_kwargs[k] = torch.cat(
+                            [v, torch.zeros_like(v)], dim=0
+                        )
 
             if stage_use_karras:
                 samples_it = karras_sample_progressive(
@@ -179,7 +213,9 @@ class PointCloudSampler:
             diffusions=[x for y in samplers for x in y.diffusions],
             num_points=[x for y in samplers for x in y.num_points],
             aux_channels=samplers[0].aux_channels,
-            model_kwargs_key_filter=[x for y in samplers for x in y.model_kwargs_key_filter],
+            model_kwargs_key_filter=[
+                x for y in samplers for x in y.model_kwargs_key_filter
+            ],
             guidance_scale=[x for y in samplers for x in y.guidance_scale],
             clip_denoised=samplers[0].clip_denoised,
             use_karras=[x for y in samplers for x in y.use_karras],

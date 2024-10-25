@@ -1,129 +1,24 @@
-import os
-import ssl
 import torch
-import ailia
-import shutil
 import random
-import urllib
 import numpy as np
 import mitsuba as mi
 from .ply_util import write_ply
 from dataclasses import dataclass
+from pepsi.consts import XMLTemplates
+from pepsi.custom_types import shape_category_type
+from pepsi.pointnet import POINTNET_MODELS, PointNet
 from typing import BinaryIO, Dict, List, Optional, Union
+
+mi.set_variant("scalar_rgb")
 
 
 COLORS = frozenset(["R", "G", "B", "A"])
-PARTNET_REMOTE_DIR = "https://storage.googleapis.com/ailia-models/pointnet_pytorch"
-
-
-@dataclass
-class PointNetModel:
-    weight: str
-    model: str
-    parts: Dict[str, int]
-
-
-PARTNET_MODELS: Dict[str, PointNetModel] = {
-    "chair": PointNetModel(
-        weight="chair_100.onnx",
-        model="chair_100.onnx.prototxt",
-        parts={
-            "back": 0,
-            "seat": 1,
-            "leg": 2,
-            "arm": 3,
-        },
-    ),
-    "table": PointNetModel(
-        weight="table_100.onnx",
-        model="table_100.onnx.prototxt",
-        parts={
-            "top": 0,
-            "leg": 1,
-            "support": 2,
-        },
-    ),
-    "lamp": PointNetModel(
-        weight="lamp_100.onnx",
-        model="lamp_100.onnx.prototxt",
-        parts={
-            "base": 0,
-            "shade": 1,
-            "bulb": 2,
-            "tube": 3,
-        },
-    ),
-}
 
 
 def preprocess(data, channel):
     if channel in COLORS:
         return np.round(data * 255.0)
     return data
-
-
-# https://github.com/hasancaslan/BeautifulPointCloud
-class XMLTemplates:
-    HEAD = """
-<scene version="0.6.0">
-    <integrator type="path">
-        <integer name="maxDepth" value="-1"/>
-    </integrator>
-    <sensor type="perspective">
-        <float name="farClip" value="100"/>
-        <float name="nearClip" value="0.1"/>
-        <transform name="toWorld">
-            <lookat origin="3,3,3" target="0,0,0" up="0,0,1"/>
-        </transform>
-        <float name="fov" value="25"/>
-        <sampler type="independent">
-            <integer name="sampleCount" value="256"/>
-        </sampler>
-        <film type="hdrfilm">
-            <integer name="width" value="1000"/>
-            <integer name="height" value="1000"/>
-            <rfilter type="gaussian"/>
-        </film>
-    </sensor>
-    
-    <bsdf type="roughplastic" id="surfaceMaterial">
-        <string name="distribution" value="ggx"/>
-        <float name="alpha" value="0.05"/>
-        <float name="intIOR" value="1.46"/>
-        <rgb name="diffuseReflectance" value="1,1,1"/> <!-- default 0.5 -->
-    </bsdf>
-"""
-    BALL_SEGMENT = """
-    <shape type="sphere">
-        <float name="radius" value="0.015"/>
-        <transform name="toWorld">
-            <translate x="{}" y="{}" z="{}"/>
-        </transform>
-        <bsdf type="diffuse">
-            <rgb name="reflectance" value="{},{},{}"/>
-        </bsdf>
-    </shape>
-"""
-    TAIL = """
-    <shape type="rectangle">
-        <ref name="bsdf" id="surfaceMaterial"/>
-        <transform name="toWorld">
-            <scale x="10" y="10" z="1"/>
-            <translate x="0" y="0" z="-0.5"/>
-        </transform>
-    </shape>
-    
-    <shape type="rectangle">
-        <transform name="toWorld">
-            <scale x="10" y="10" z="1"/>
-            <lookat origin="-4,4,20" target="0,0,0" up="0,0,1"/>
-        </transform>
-        <emitter type="area">
-            <rgb name="radiance" value="6,6,6"/>
-        </emitter>
-    </shape>
-</scene>
-"""
 
 
 @dataclass
@@ -138,8 +33,8 @@ class PointCloud:
 
     coords: np.ndarray
     channels: Dict[str, np.ndarray]
-    shape_category: Optional[str] = None
     labels: Optional[np.ndarray] = None
+    shape_category: Optional[shape_category_type] = None
 
     @classmethod
     def load(cls, f: Union[str, BinaryIO]) -> "PointCloud":
@@ -262,8 +157,8 @@ class PointCloud:
         return PointCloud(
             coords=new_coords,
             channels=new_channels,
-            shape_category=self.shape_category,
             labels=new_labels,
+            shape_category=self.shape_category,
         )
 
     def select_channels(self, channel_names: List[str]) -> np.ndarray:
@@ -311,7 +206,7 @@ class PointCloud:
             ),
         )
 
-    def encode(self):
+    def encode(self) -> torch.Tensor:
         coords = torch.tensor(self.coords.T, dtype=torch.float32)
         rgb = [(self.channels[x] * 255).astype(np.uint8) for x in "RGB"]
         rgb = [torch.tensor(x, dtype=torch.float32) for x in rgb]
@@ -319,7 +214,9 @@ class PointCloud:
         return torch.cat([coords, rgb], dim=0)
 
     @classmethod
-    def load_shapenet(cls, shapenet_dir, shapenet_uid, shape_category):
+    def load_shapenet(
+        cls, shapenet_dir: str, shapenet_uid: str, shape_category: shape_category_type
+    ) -> "PointCloud":
         path = f"{shapenet_dir}/{shapenet_uid}.npz"
         with open(path, "rb") as f:
             coords = np.load(f)["pointcloud"]
@@ -330,12 +227,11 @@ class PointCloud:
             shape_category=shape_category,
         )
 
-    def mask(self, part, target_fraction: float = 0.01):
+    def mask(self, part: str, target_fraction: float = 0.01) -> "PointCloud":
         assert self.shape_category is not None, "No shape category"
         assert self.labels is not None, "No labels"
-        assert part in PARTNET_MODELS[self.shape_category].parts, f"Invalid part {part}"
 
-        label = PARTNET_MODELS[self.shape_category].parts[part]
+        label = POINTNET_MODELS[self.shape_category].parts[part]
         mask = np.isin(self.labels, label)
 
         # Ensure at least 1% of the points are selected
@@ -358,20 +254,19 @@ class PointCloud:
             new_channels[k][mask] = 1
 
         return PointCloud(
+            labels=new_labels,
             coords=new_coords,
             channels=new_channels,
             shape_category=self.shape_category,
-            labels=new_labels,
         )
 
-    # rendering
     @staticmethod
-    def compute_xml_color(x, y, z):
+    def compute_xml_color(x: float, y: float, z: float) -> np.ndarray:
         vec = np.clip(np.array([x, y, z]), 0.001, 1.0)
         vec /= np.linalg.norm(vec)
         return vec
 
-    def generate_xml_content(self, pcl):
+    def generate_xml_content(self, pcl: np.ndarray) -> str:
         xml_segments = [XMLTemplates.HEAD]
         for point in pcl:
             color = self.compute_xml_color(
@@ -384,24 +279,25 @@ class PointCloud:
         return "".join(xml_segments)
 
     @staticmethod
-    def save_xml_content_to_file(output_file_path, xml_content):
-        xml_file_path = f"{output_file_path}.xml"
-        with open(xml_file_path, "w") as f:
-            f.write(xml_content)
-        return xml_file_path
-
-    @staticmethod
-    def render_scene(xml_file_path):
-        mi.set_variant("scalar_rgb")
-        scene = mi.load_file(xml_file_path)
+    def render_scene(xml_content: str) -> mi.TensorXf:
+        scene = mi.load_string(xml_content)
         img = mi.render(scene)
         return img
 
     @staticmethod
-    def save_scene(output_file_path, rendered_scene):
+    def save_scene(output_file_path: str, rendered_scene: mi.TensorXf):
         mi.util.write_bitmap(f"{output_file_path}.png", rendered_scene)
 
-    def render(self, output_file_path, num_points=4096):
+    @staticmethod
+    def rendered_scene_to_img(rendered_scene: mi.TensorXf) -> np.ndarray:
+        img = np.array(rendered_scene)
+        img = np.clip(img, 0, 1)
+        img = (img * 255).astype(np.uint8)
+        return img
+
+    def render(
+        self, output_file_path: Optional[str] = None, num_points: int = 4096
+    ) -> np.ndarray:
         pcl = self.coords[
             np.random.choice(self.coords.shape[0], num_points, replace=False)
         ]
@@ -412,12 +308,12 @@ class PointCloud:
         pcl = pcl.astype(np.float32)
 
         xml_content = self.generate_xml_content(pcl)
-        xml_file_path = self.save_xml_content_to_file(output_file_path, xml_content)
-        rendered_scene = self.render_scene(xml_file_path)
-        self.save_scene(output_file_path, rendered_scene)
+        rendered_scene = self.render_scene(xml_content)
+        if output_file_path is not None:
+            self.save_scene(output_file_path, rendered_scene)
+        return self.rendered_scene_to_img(rendered_scene)
 
-    # pointnet
-    def segment(self, pointnet):
+    def segment(self, pointnet: PointNet) -> "PointCloud":
         assert self.shape_category == pointnet.shape_category, "Invalid shape category"
         points = self.coords.copy()
         points = points - np.expand_dims(np.mean(points, axis=0), 0)
@@ -429,47 +325,15 @@ class PointCloud:
         pointnet.net.set_input_shape(points.shape)
         pred, _ = pointnet.net.predict({"point": points})
         labels = np.argmax(pred[0], axis=1)
-        values = list(PARTNET_MODELS[self.shape_category].parts.values())
+        values = list(POINTNET_MODELS[self.shape_category].parts.values())
         assert np.isin(labels, np.array(values)).all(), "Invalid part label"
 
         new_coords = self.coords.copy()
         new_channels = {k: v.copy() for k, v in self.channels.items()}
 
         return PointCloud(
+            labels=labels,
             coords=new_coords,
             channels=new_channels,
             shape_category=self.shape_category,
-            labels=labels,
         )
-
-
-class PointNet:
-    def __init__(
-        self,
-        shape_category: str,
-        pointnet_models_dir: str,
-    ):
-        assert (
-            shape_category in PARTNET_MODELS.keys()
-        ), f"Invalid shape category {shape_category}"
-        self.shape_category = shape_category
-        os.makedirs(pointnet_models_dir, exist_ok=True)
-        weight_file = PARTNET_MODELS[shape_category].weight
-        weight_path = self.download(pointnet_models_dir, weight_file)
-        model_file = PARTNET_MODELS[shape_category].model
-        model_path = self.download(pointnet_models_dir, model_file)
-        self.net = ailia.Net(model_path, weight_path)
-
-    @classmethod
-    def download(cls, destination_dir, file_name):
-        destination_path = f"{destination_dir}/{file_name}"
-        if not os.path.exists(destination_path):
-            temp_path = destination_path + ".tmp"
-            remote_path = f"{PARTNET_REMOTE_DIR}/{file_name}"
-            try:
-                urllib.request.urlretrieve(remote_path, temp_path)
-            except ssl.SSLError:
-                remote_path = remote_path.replace("https", "http")
-                urllib.request.urlretrieve(remote_path, temp_path)
-            shutil.move(temp_path, destination_path)
-        return destination_path

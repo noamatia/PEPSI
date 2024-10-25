@@ -75,4 +75,4 @@ def load_checkpoint(
     path = fetch_file_cached(
         MODEL_PATHS[checkpoint_name], progress=progress, cache_dir=cache_dir, chunk_size=chunk_size
     )
-    return torch.load(path, map_location=device)
+    return torch.load(path, map_location=device, weights_only=True)

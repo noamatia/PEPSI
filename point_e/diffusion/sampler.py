@@ -90,12 +90,13 @@ class PointCloudSampler:
         self,
         batch_size: int,
         model_kwargs: Dict[str, Any],
+        injections_dir: Optional[str] = None,
         prev_samples: Optional[torch.Tensor] = None,
         guidances: Optional[List[torch.Tensor]] = None,
     ) -> torch.Tensor:
         samples = None
         for x in self.sample_batch_progressive(
-            batch_size, model_kwargs, prev_samples, guidances
+            batch_size, model_kwargs, injections_dir, prev_samples, guidances
         ):
             samples = x
         return samples
@@ -104,6 +105,7 @@ class PointCloudSampler:
         self,
         batch_size: int,
         model_kwargs: Dict[str, Any],
+        injections_dir: Optional[str] = None,
         prev_samples: Optional[torch.Tensor] = None,
         guidances: Optional[List[torch.Tensor]] = None,
     ) -> Iterator[torch.Tensor]:
@@ -137,10 +139,10 @@ class PointCloudSampler:
             self.model_kwargs_key_filter,
             guidances,
         ):
-            if (
-                prev_samples is not None
-                and type(model) != CLIPImageGridUpsamplePointDiffusionTransformer
-            ):
+            is_upsampling = (
+                type(model) == CLIPImageGridUpsamplePointDiffusionTransformer
+            )
+            if prev_samples is not None and not is_upsampling:
                 continue
             stage_model_kwargs = model_kwargs.copy()
             if stage_key_filter != "*":
@@ -181,6 +183,7 @@ class PointCloudSampler:
                     sigma_max=stage_sigma_max,
                     s_churn=stage_s_churn,
                     guidance_scale=stage_guidance_scale,
+                    injections_dir=injections_dir if not is_upsampling else None,
                 )
             else:
                 internal_batch_size = batch_size

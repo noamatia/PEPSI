@@ -286,7 +286,7 @@ class PointCloud:
 
     @staticmethod
     def save_scene(output_file_path: str, rendered_scene: mi.TensorXf):
-        mi.util.write_bitmap(f"{output_file_path}.png", rendered_scene)
+        mi.util.write_bitmap(output_file_path, rendered_scene)
 
     @staticmethod
     def rendered_scene_to_img(rendered_scene: mi.TensorXf) -> np.ndarray:

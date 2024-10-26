@@ -23,7 +23,7 @@ class PEPSI(pl.LightningModule):
         copy_prompt: str,
         dev: torch.device,
         cond_drop_prob: float,
-        val_dataloader: DataLoader,
+        val_dataloader: Optional[DataLoader] = None,
     ):
         super().__init__()
         self.lr = lr
@@ -33,7 +33,8 @@ class PEPSI(pl.LightningModule):
         self.batch_size = batch_size
         self.copy_prompt = copy_prompt
         self._init_model(cond_drop_prob)
-        self._init_val_data(val_dataloader)
+        if val_dataloader is not None:
+            self._init_val_data(val_dataloader)
 
     def _init_model(self, cond_drop_prob: float):
         self.diffusion = diffusion_from_config(DIFFUSION_CONFIGS[MODEL_NAME])
@@ -165,8 +166,10 @@ class PEPSI(pl.LightningModule):
             batch[TARGET_LATENTS],
         )
         with torch.no_grad():
-            for part, split, prompt, source_latent, target_latent in zip(
-                parts, splits, prompts, source_latents, target_latents
+            for part, split, prompt, source_latent, target_latent in tqdm(
+                zip(parts, splits, prompts, source_latents, target_latents),
+                total=len(prompts),
+                desc="Testing val data",
             ):
                 key = OUTPUT + "_" + split
                 log_data.setdefault(key, [])

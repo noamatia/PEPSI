@@ -47,7 +47,7 @@ def build_name(args: argparse.Namespace) -> str:
 
 
 def main(args: argparse.Namespace, device: torch.device):
-    shapetalk_df = pd.read_csv(SHAPETALK_CSV_PATH)
+    shapetalk_df = pd.read_csv(SHAPETALK_CSV_PATH, index_col=ID)
     shapetalk_df = shapetalk_df[
         shapetalk_df.source_object_class == args.shape_category.value
     ]

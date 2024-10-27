@@ -134,14 +134,20 @@ def karras_sample_progressive(
     s_tmax=float("inf"),
     s_noise=1.0,
     guidance_scale=0.0,
-    injections_dir=None,
+    copy_steps=None,
+    injection_dir=None,
+    injection_indices_list=None,
 ):
     sigmas = get_sigmas_karras(steps, sigma_min, sigma_max, rho, device=device)
-    if injections_dir is not None:
-        x_T_path = os.path.join(injections_dir, "x_T.pt")
+    if injection_dir is not None:
+        x_T_path = os.path.join(injection_dir, "x_T.pt")
         if os.path.exists(x_T_path):
+            # Inpainting
+            assert copy_steps is not None and injection_indices_list is not None
             x_T = th.load(x_T_path)
         else:
+            # Copy
+            assert copy_steps is None and injection_indices_list is None
             x_T = th.randn(*shape, device=device) * sigma_max
             th.save(x_T, x_T_path)
     else:
@@ -151,7 +157,9 @@ def karras_sample_progressive(
     ]
 
     if sampler != "ancestral":
-        sampler_args = dict(s_churn=s_churn, s_tmin=s_tmin, s_tmax=s_tmax, s_noise=s_noise, injections_dir=injections_dir)
+        sampler_args = dict(s_churn=s_churn, s_tmin=s_tmin, s_tmax=s_tmax, s_noise=s_noise)
+        if sampler == "heun":
+            sampler_args.update(dict(copy_steps=copy_steps, injection_dir=injection_dir, injection_indices_list=injection_indices_list))
     else:
         sampler_args = {}
 
@@ -255,7 +263,9 @@ def sample_heun(
     s_tmin=0.0,
     s_tmax=float("inf"),
     s_noise=1.0,
-    injections_dir=None
+    copy_steps=None,
+    injection_dir=None,
+    injection_indices_list=None,
 ):
     """Implements Algorithm 2 (Heun steps) from Karras et al. (2022)."""
     s_in = x.new_ones([x.shape[0]])
@@ -269,11 +279,15 @@ def sample_heun(
         gamma = (
             min(s_churn / (len(sigmas) - 1), 2**0.5 - 1) if s_tmin <= sigmas[i] <= s_tmax else 0.0
         )
-        if injections_dir is not None:
-           eps_path = os.path.join(injections_dir, f"eps_{i}.pt")
+        if injection_dir is not None:
+           eps_path = os.path.join(injection_dir, f"eps_{i}.pt")
            if os.path.exists(eps_path):
+               # Inpainting
+               assert copy_steps is not None and injection_indices_list is not None
                eps = th.load(eps_path)
            else:
+                # Copy
+               assert copy_steps is None and injection_indices_list is None
                eps = th.randn_like(x) * s_noise
                th.save(eps, eps_path)
         else:
@@ -295,10 +309,19 @@ def sample_heun(
             d_2 = to_d(x_2, sigmas[i + 1], denoised_2)
             d_prime = (d + d_2) / 2
             x = x + d_prime * dt
-        if injections_dir is not None:
-            x_path = os.path.join(injections_dir, f"x_{i}.pt")
-            if injections_dir is None:
+        if injection_dir is not None:
+            x_path = os.path.join(injection_dir, f"x_{i}.pt")
+            if injection_indices_list is None:
+                # Copy
                 th.save(x, x_path)
+            else:
+                # Inpainting
+                prev_x = th.load(x_path)
+                if i < copy_steps:
+                    x = prev_x
+                else:
+                    for j, injection_indices in enumerate(injection_indices_list):
+                        x[j, :, injection_indices] = prev_x[j, :, injection_indices]
     yield {"x": x, "pred_xstart": denoised}
 
 

@@ -21,7 +21,7 @@ def parse_args():
     parser.add_argument("--run_id", type=str)
     parser.add_argument("--base_dir", type=str)
     parser.add_argument("--shapenet_dir", type=str)
-    parser.add_argument("--wandb_api_key", type=str)
+    parser.add_argument("--wandb_project", type=str)
     parser.add_argument("--local", action="store_true")
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--epochs", type=int, default=250)
@@ -32,7 +32,6 @@ def parse_args():
     parser.add_argument("--num_val_samples", type=int, default=10)
     parser.add_argument("--utterance_key", type=utterance_key_type)
     parser.add_argument("--cond_drop_prob", type=float, default=0.5)
-    parser.add_argument("--wandb_project", type=str, default="PEPSI")
     parser.add_argument("--shape_category", type=shape_category_type)
     return parser.parse_args()
 
@@ -48,12 +47,9 @@ def build_name(args: argparse.Namespace) -> str:
 
 
 def main(args: argparse.Namespace, device: torch.device):
-    log_wandb = args.wandb_api_key is not None and args.wandb_project is not None
-    if log_wandb:
-        os.environ[WANDB_API_KEY] = args.wandb_api_key
-
+    log_wandb = args.wandb_project is not None
     if args.run_id is not None:
-        assert log_wandb, "Must provide WANDB_API_KEY to resume run"
+        assert log_wandb, "Must provide wandb_project if run_id is provided"
         run_id, wandb_project = args.run_id, args.wandb_project
         run = wandb.Api().run(os.path.join(wandb_project, run_id))
         name, config = run.name, run.config

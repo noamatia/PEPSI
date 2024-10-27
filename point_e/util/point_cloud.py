@@ -227,10 +227,16 @@ class PointCloud:
             shape_category=shape_category,
         )
 
+    def injection_indices(self, part: int) -> torch.Tensor:
+        assert self.shape_category is not None, "No shape category"
+        assert self.labels is not None, "No labels"
+        label = POINTNET_MODELS[self.shape_category].parts[part]
+        mask = np.isin(self.labels, label)
+        return torch.from_numpy(np.where(mask == 0)[0])
+
     def mask(self, part: str, target_fraction: float = 0.01) -> "PointCloud":
         assert self.shape_category is not None, "No shape category"
         assert self.labels is not None, "No labels"
-
         label = POINTNET_MODELS[self.shape_category].parts[part]
         mask = np.isin(self.labels, label)
 

@@ -3,6 +3,7 @@ Helpers for sampling from a single- or multi-stage point cloud diffusion model.
 """
 
 import torch
+import numpy as np
 import torch.nn as nn
 from pepsi.consts import GUIDANCE
 from point_e.util.point_cloud import PointCloud
@@ -90,24 +91,39 @@ class PointCloudSampler:
         self,
         batch_size: int,
         model_kwargs: Dict[str, Any],
-        injections_dir: Optional[str] = None,
+        return_list: bool = False,
+        copy_steps: Optional[int] = None,
+        injection_dir: Optional[str] = None,
         prev_samples: Optional[torch.Tensor] = None,
         guidances: Optional[List[torch.Tensor]] = None,
+        injection_indices_list: Optional[List[np.ndarray]] = None,
     ) -> torch.Tensor:
         samples = None
+        samples_list = []
         for x in self.sample_batch_progressive(
-            batch_size, model_kwargs, injections_dir, prev_samples, guidances
+            guidances=guidances,
+            batch_size=batch_size,
+            copy_steps=copy_steps,
+            model_kwargs=model_kwargs,
+            prev_samples=prev_samples,
+            injection_dir=injection_dir,
+            injection_indices_list=injection_indices_list,
         ):
-            samples = x
-        return samples
+            if x is None:
+                samples_list.append(samples)
+            else:
+                samples = x
+        return samples_list if return_list else samples
 
     def sample_batch_progressive(
         self,
         batch_size: int,
         model_kwargs: Dict[str, Any],
-        injections_dir: Optional[str] = None,
+        copy_steps: Optional[int] = None,
+        injection_dir: Optional[str] = None,
         prev_samples: Optional[torch.Tensor] = None,
         guidances: Optional[List[torch.Tensor]] = None,
+        injection_indices_list: Optional[List[np.ndarray]] = None,
     ) -> Iterator[torch.Tensor]:
         n = len(self.models)
         if guidances is None:
@@ -172,18 +188,22 @@ class PointCloudSampler:
 
             if stage_use_karras:
                 samples_it = karras_sample_progressive(
-                    diffusion=diffusion,
                     model=model,
                     shape=sample_shape,
-                    steps=stage_karras_steps,
-                    clip_denoised=self.clip_denoised,
-                    model_kwargs=stage_model_kwargs,
                     device=self.device,
+                    diffusion=diffusion,
+                    s_churn=stage_s_churn,
+                    steps=stage_karras_steps,
                     sigma_min=stage_sigma_min,
                     sigma_max=stage_sigma_max,
-                    s_churn=stage_s_churn,
+                    model_kwargs=stage_model_kwargs,
+                    clip_denoised=self.clip_denoised,
                     guidance_scale=stage_guidance_scale,
-                    injections_dir=injections_dir if not is_upsampling else None,
+                    copy_steps=copy_steps if not is_upsampling else None,
+                    injection_indices_list=(
+                        injection_indices_list if not is_upsampling else None
+                    ),
+                    injection_dir=injection_dir if not is_upsampling else None,
                 )
             else:
                 internal_batch_size = batch_size
@@ -204,6 +224,7 @@ class PointCloudSampler:
                         [stage_model_kwargs["low_res"][: len(samples)], samples], dim=-1
                     )
                 yield samples
+            yield None
 
     @classmethod
     def combine(cls, *samplers: "PointCloudSampler") -> "PointCloudSampler":

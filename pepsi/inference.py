@@ -17,13 +17,12 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", type=str)
     parser.add_argument("--run_id", type=str, required=True)
-    parser.add_argument("--wandb_api_key", type=str, required=True)
-    parser.add_argument("--wandb_project", type=str, default="PEPSI")
+    parser.add_argument("--wandb_project", type=str, required=True)
+    parser.add_argument("--copy_steps_list", type=str, default="0,35,45,55,65")
     return parser.parse_args()
 
 
 def main(args: argparse.Namespace, device: torch.device):
-    os.environ[WANDB_API_KEY] = args.wandb_api_key
     run = wandb.Api().run(os.path.join(args.wandb_project, args.run_id))
     config = run.config
     shape_category = SHAPE_CATEGORY[config[SHAPE_CATEGORY_CONF_KEY]]
@@ -51,7 +50,7 @@ def main(args: argparse.Namespace, device: torch.device):
     os.makedirs(results_pcs_dir, exist_ok=True)
     results_images_dir = os.path.join(output_dir, IMAGES, checkpoint)
     os.makedirs(results_images_dir, exist_ok=True)
-    injections_dir = os.path.join(output_dir, INJECTIONS, checkpoint)
+    injection_dir = os.path.join(output_dir, INJECTIONS, checkpoint)
 
     shapetalk_df = pd.read_csv(SHAPETALK_CSV_PATH, index_col=ID)
     shapetalk_df = shapetalk_df[
@@ -96,7 +95,8 @@ def main(args: argparse.Namespace, device: torch.device):
     model.eval()
 
     for batch in tqdm(test_dataloader, total=len(test_dataloader)):
-        indices, prompts, source_latents, target_latents = (
+        parts, indices, prompts, source_latents, target_latents = (
+            batch[PARTS],
             batch[INDICES],
             batch[PROMPTS],
             batch[SOURCE_LATENTS],
@@ -113,20 +113,46 @@ def main(args: argparse.Namespace, device: torch.device):
             pc.save(os.path.join(results_pcs_dir, f"{idx}_{N_PTS_SAMPLE}.npz"))
             pc.render(os.path.join(results_images_dir, f"{idx}.png"))
 
-        if os.path.exists(injections_dir):
-            shutil.rmtree(injections_dir)
-        os.makedirs(injections_dir, exist_ok=True)
+        if os.path.exists(injection_dir):
+            shutil.rmtree(injection_dir)
+        os.makedirs(injection_dir, exist_ok=True)
 
-        samples = model.sampler.sample_batch(
-            injections_dir=injections_dir,
+        samples_list = model.sampler.sample_batch(
+            return_list=True,
+            injection_dir=injection_dir,
             batch_size=config[BATCH_SIZE],
             guidances=[target_latents, None],
             model_kwargs={TEXTS: [config[COPY_PROMPT]] * config[BATCH_SIZE]},
         )
-        pcs = model.sampler.output_to_point_clouds(samples)
-        for idx, pc in zip(indices, pcs):
-            pc.save(os.path.join(results_pcs_dir, f"{idx}_copy_{N_PTS_SAMPLE}.npz"))
-            pc.render(os.path.join(results_images_dir, f"{idx}_copy.png"))
+        pcs_1024 = model.sampler.output_to_point_clouds(samples_list[0])
+        pcs_4096 = model.sampler.output_to_point_clouds(samples_list[1])
+        injection_indices_list = []
+        for idx, pc_1024, pc_4096, part in zip(indices, pcs_1024, pcs_4096, parts):
+            pc_4096.save(
+                os.path.join(results_pcs_dir, f"{idx}_copy_{N_PTS_SAMPLE}.npz")
+            )
+            pc_4096.render(os.path.join(results_images_dir, f"{idx}_copy.png"))
+            pc_1024.shape_category = shape_category
+            pc_1024 = pc_1024.segment(pointnet)
+            injection_indices_list.append(pc_1024.injection_indices(part).to(device))
+
+        for copy_steps in map(int, args.copy_steps_list.split(",")):
+            samples = model.sampler.sample_batch(
+                copy_steps=copy_steps,
+                injection_dir=injection_dir,
+                batch_size=config[BATCH_SIZE],
+                guidances=[target_latents, None],
+                injection_indices_list=injection_indices_list,
+                model_kwargs={TEXTS: [config[COPY_PROMPT]] * config[BATCH_SIZE]},
+            )
+            pcs = model.sampler.output_to_point_clouds(samples)
+            for idx, pc in zip(indices, pcs):
+                pc.save(
+                    os.path.join(
+                        results_pcs_dir, f"{idx}_{copy_steps}_{N_PTS_SAMPLE}.npz"
+                    )
+                )
+                pc.render(os.path.join(results_images_dir, f"{idx}_{copy_steps}.png"))
 
 
 if __name__ == "__main__":

@@ -53,9 +53,9 @@ class ShapeTalk(Dataset):
         images_dir: Optional[str],
         utterance_key: utterance_key_type,
     ):
-        for idx, row in tqdm.tqdm(df.iterrows(), total=len(df), desc="Loading data"):
+        for row_id, row in tqdm.tqdm(df.iterrows(), total=len(df), desc="Loading data"):
             self.parts.append(row.part)
-            self.indices.append(idx)
+            self.indices.append(row_id)
             self.prompts.append(row[utterance_key.value])
             file_prefix = row[uid_key.value].replace("/", "_")
 

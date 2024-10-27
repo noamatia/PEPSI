@@ -18,7 +18,7 @@ def parse_args():
     parser.add_argument("--checkpoint", type=str)
     parser.add_argument("--run_id", type=str, required=True)
     parser.add_argument("--wandb_project", type=str, required=True)
-    parser.add_argument("--copy_steps_list", type=str, default="0,35,45,55,65")
+    parser.add_argument("--copy_steps_list", type=str, default="0,35,45,55")
     return parser.parse_args()
 
 
@@ -52,6 +52,8 @@ def main(args: argparse.Namespace, device: torch.device):
     os.makedirs(results_images_dir, exist_ok=True)
     injection_dir = os.path.join(output_dir, INJECTIONS, checkpoint)
 
+    copy_steps_list = list(map(int, args.copy_steps_list.split(",")))
+
     shapetalk_df = pd.read_csv(SHAPETALK_CSV_PATH, index_col=ID)
     shapetalk_df = shapetalk_df[
         shapetalk_df.source_object_class == shape_category.value
@@ -59,6 +61,13 @@ def main(args: argparse.Namespace, device: torch.device):
     if config[LOCAL]:
         shapetalk_df = shapetalk_df[shapetalk_df.is_local]
     test_df = shapetalk_df[shapetalk_df.changeit_split == SPLIT.TEST.value]
+    test_df = test_df[
+        test_df[ID].apply(
+            lambda row_id: not os.path.exists(
+                os.path.join(results_images_dir, f"{row_id}_{copy_steps_list[-1]}.png")
+            )
+        )
+    ]
 
     pointnet = PointNet(
         shape_category=shape_category,
@@ -109,9 +118,9 @@ def main(args: argparse.Namespace, device: torch.device):
             guidances=[source_latents, None],
         )
         pcs = model.sampler.output_to_point_clouds(samples)
-        for idx, pc in zip(indices, pcs):
-            pc.save(os.path.join(results_pcs_dir, f"{idx}_{N_PTS_SAMPLE}.npz"))
-            pc.render(os.path.join(results_images_dir, f"{idx}.png"))
+        for row_id, pc in zip(indices, pcs):
+            pc.save(os.path.join(results_pcs_dir, f"{row_id}_{N_PTS_SAMPLE}.npz"))
+            pc.render(os.path.join(results_images_dir, f"{row_id}.png"))
 
         if os.path.exists(injection_dir):
             shutil.rmtree(injection_dir)
@@ -127,16 +136,16 @@ def main(args: argparse.Namespace, device: torch.device):
         pcs_1024 = model.sampler.output_to_point_clouds(samples_list[0])
         pcs_4096 = model.sampler.output_to_point_clouds(samples_list[1])
         injection_indices_list = []
-        for idx, pc_1024, pc_4096, part in zip(indices, pcs_1024, pcs_4096, parts):
+        for row_id, pc_1024, pc_4096, part in zip(indices, pcs_1024, pcs_4096, parts):
             pc_4096.save(
-                os.path.join(results_pcs_dir, f"{idx}_copy_{N_PTS_SAMPLE}.npz")
+                os.path.join(results_pcs_dir, f"{row_id}_copy_{N_PTS_SAMPLE}.npz")
             )
-            pc_4096.render(os.path.join(results_images_dir, f"{idx}_copy.png"))
+            pc_4096.render(os.path.join(results_images_dir, f"{row_id}_copy.png"))
             pc_1024.shape_category = shape_category
             pc_1024 = pc_1024.segment(pointnet)
             injection_indices_list.append(pc_1024.injection_indices(part).to(device))
 
-        for copy_steps in map(int, args.copy_steps_list.split(",")):
+        for copy_steps in copy_steps_list:
             samples = model.sampler.sample_batch(
                 copy_steps=copy_steps,
                 injection_dir=injection_dir,
@@ -146,13 +155,15 @@ def main(args: argparse.Namespace, device: torch.device):
                 model_kwargs={TEXTS: [config[COPY_PROMPT]] * config[BATCH_SIZE]},
             )
             pcs = model.sampler.output_to_point_clouds(samples)
-            for idx, pc in zip(indices, pcs):
+            for row_id, pc in zip(indices, pcs):
                 pc.save(
                     os.path.join(
-                        results_pcs_dir, f"{idx}_{copy_steps}_{N_PTS_SAMPLE}.npz"
+                        results_pcs_dir, f"{row_id}_{copy_steps}_{N_PTS_SAMPLE}.npz"
                     )
                 )
-                pc.render(os.path.join(results_images_dir, f"{idx}_{copy_steps}.png"))
+                pc.render(
+                    os.path.join(results_images_dir, f"{row_id}_{copy_steps}.png")
+                )
 
 
 if __name__ == "__main__":

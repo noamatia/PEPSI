@@ -13,26 +13,27 @@ from point_e.util.point_cloud import PointNet
 from pepsi.shapetalk import utterance_key_type
 from torch.utils.data import DataLoader, ConcatDataset
 from pytorch_lightning.callbacks import ModelCheckpoint
-from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--run_id", type=str)
+    parser.add_argument("--base_dir", type=str)
+    parser.add_argument("--shapenet_dir", type=str)
     parser.add_argument("--wandb_api_key", type=str)
     parser.add_argument("--local", action="store_true")
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--epochs", type=int, default=250)
     parser.add_argument("--val_freq", type=int, default=25)
     parser.add_argument("--batch_size", type=int, default=6)
-    parser.add_argument("--base_dir", type=str, required=True)
     parser.add_argument("--copy_prob", type=float, default=0.1)
     parser.add_argument("--copy_prompt", type=str, default="COPY")
     parser.add_argument("--num_val_samples", type=int, default=10)
-    parser.add_argument("--shapenet_dir", type=str, required=True)
+    parser.add_argument("--utterance_key", type=utterance_key_type)
     parser.add_argument("--cond_drop_prob", type=float, default=0.5)
     parser.add_argument("--wandb_project", type=str, default="PEPSI")
-    parser.add_argument("--utterance_key", type=utterance_key_type, required=True)
-    parser.add_argument("--shape_category", type=shape_category_type, required=True)
+    parser.add_argument("--shape_category", type=shape_category_type)
     return parser.parse_args()
 
 
@@ -47,6 +48,40 @@ def build_name(args: argparse.Namespace) -> str:
 
 
 def main(args: argparse.Namespace, device: torch.device):
+    log_wandb = args.wandb_api_key is not None and args.wandb_project is not None
+    if log_wandb:
+        os.environ[WANDB_API_KEY] = args.wandb_api_key
+
+    if args.run_id is not None:
+        assert log_wandb, "Must provide WANDB_API_KEY to resume run"
+        run_id, wandb_project = args.run_id, args.wandb_project
+        run = wandb.Api().run(os.path.join(wandb_project, run_id))
+        name, config = run.name, run.config
+        assert wandb_project == config[WANDB_PROJECT], "Project mismatch"
+        config[SHAPE_CATEGORY_CONF_KEY] = SHAPE_CATEGORY[
+            config[SHAPE_CATEGORY_CONF_KEY]
+        ]
+        config[UTTERANCE_KEY_CONF_KEY] = UTTERANCE_KEY[config[UTTERANCE_KEY_CONF_KEY]]
+        args = argparse.Namespace(**run.config)
+        output_dir = os.path.join(args.base_dir, RUNS, name)
+        checkpoints_dir = os.path.join(output_dir, CHECKPOINTS)
+        checkpoint_path = sorted(
+            [os.path.join(checkpoints_dir, f) for f in os.listdir(checkpoints_dir)],
+            key=os.path.getmtime,
+            reverse=True,
+        )[0]
+        os.environ[WANDB_DIR] = output_dir
+        wandb.init(project=wandb_project, id=run_id, resume="allow")
+    else:
+        name = build_name(args)
+        output_dir = os.path.join(args.base_dir, RUNS, name)
+        os.makedirs(output_dir, exist_ok=True)
+        checkpoints_dir = os.path.join(output_dir, CHECKPOINTS)
+        checkpoint_path = None
+        if log_wandb:
+            os.environ[WANDB_DIR] = output_dir
+            wandb.init(project=args.wandb_project, name=name, config=vars(args))
+
     shapetalk_df = pd.read_csv(SHAPETALK_CSV_PATH, index_col=ID)
     shapetalk_df = shapetalk_df[
         shapetalk_df.source_object_class == args.shape_category.value
@@ -56,19 +91,10 @@ def main(args: argparse.Namespace, device: torch.device):
     train_df = shapetalk_df[shapetalk_df.changeit_split == SPLIT.TRAIN.value]
     test_df = shapetalk_df[shapetalk_df.changeit_split == SPLIT.TEST.value]
 
-    name = build_name(args)
-    output_dir = os.path.join(args.base_dir, RUNS, name)
-    os.makedirs(output_dir, exist_ok=True)
     pcs_dir = os.path.join(args.base_dir, PCS)
     os.makedirs(pcs_dir, exist_ok=True)
     pointnet_models_dir = os.path.join(args.base_dir, POINTNET_MODELS)
     os.makedirs(pointnet_models_dir, exist_ok=True)
-
-    log_wandb = args.wandb_api_key is not None
-    if log_wandb:
-        os.environ[WANDB_DIR] = output_dir
-        os.environ[WANDB_API_KEY] = args.wandb_api_key
-        wandb.init(project=args.wandb_project, name=name, config=vars(args))
 
     pointnet = PointNet(
         shape_category=args.shape_category,
@@ -119,33 +145,43 @@ def main(args: argparse.Namespace, device: torch.device):
         dataset=ConcatDataset([val_dataset_train, val_dataset_test]),
     )
 
-    model = PEPSI(
-        lr=args.lr,
-        dev=device,
-        log_wandb=log_wandb,
-        copy_prob=args.copy_prob,
-        batch_size=args.batch_size,
-        copy_prompt=args.copy_prompt,
-        val_dataloader=val_dataloader,
-        cond_drop_prob=args.cond_drop_prob,
-    )
+    model_kwargs = {
+        LR: args.lr,
+        DEV: device,
+        LOG_WANDB: log_wandb,
+        COPY_PROB: args.copy_prob,
+        BATCH_SIZE: args.batch_size,
+        COPY_PROMPT: args.copy_prompt,
+        VAL_DATALOADER: val_dataloader,
+        COND_DROP_PROB: args.cond_drop_prob,
+    }
+    if checkpoint_path is not None:
+        model_kwargs[VAL_DATALOADER] = None
+        model_kwargs[CHECKPOINT_PATH] = checkpoint_path
+        model = PEPSI.load_from_checkpoint(**model_kwargs)
+    else:
+        model = PEPSI(**model_kwargs)
+
     if log_wandb:
         wandb.watch(model)
     checkpoint_callback = ModelCheckpoint(
         save_top_k=-1,
-        save_weights_only=True,
+        dirpath=checkpoints_dir,
         every_n_epochs=args.val_freq,
-        dirpath=os.path.join(output_dir, CHECKPOINTS),
     )
+    logger = [TensorBoardLogger(output_dir)]
+    if log_wandb:
+        logger.append(WandbLogger())
     trainer = pl.Trainer(
+        logger=logger,
         max_epochs=args.epochs,
         accumulate_grad_batches=10,
         callbacks=[checkpoint_callback],
-        logger=TensorBoardLogger(output_dir),
         check_val_every_n_epoch=args.val_freq,
     )
     trainer.fit(
         model=model,
+        ckpt_path=checkpoint_path,
         val_dataloaders=val_dataloader,
         train_dataloaders=train_dataloader,
     )

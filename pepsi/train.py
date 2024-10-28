@@ -48,35 +48,36 @@ def build_name(args: argparse.Namespace) -> str:
 
 def main(args: argparse.Namespace, device: torch.device):
     log_wandb = args.wandb_project is not None
+    prev_checkpoint_path = None
     if args.run_id is not None:
         assert log_wandb, "Must provide wandb_project if run_id is provided"
-        run_id, wandb_project = args.run_id, args.wandb_project
-        run = wandb.Api().run(os.path.join(wandb_project, run_id))
-        name, config = run.name, run.config
-        assert wandb_project == config[WANDB_PROJECT], "Project mismatch"
+        run = wandb.Api().run(os.path.join(args.wandb_project, args.run_id))
+        config = run.config
+        assert args.wandb_project == config[WANDB_PROJECT], "Project mismatch"
+        prev_output_dir = os.path.join(config[BASE_DIR], RUNS, run.name)
+        prev_checkpoints_dir = os.path.join(prev_output_dir, CHECKPOINTS)
+        prev_checkpoint_path = sorted(
+            [
+                os.path.join(prev_checkpoints_dir, f)
+                for f in os.listdir(prev_checkpoints_dir)
+            ],
+            key=os.path.getmtime,
+            reverse=True,
+        )[0]
         config[SHAPE_CATEGORY_CONF_KEY] = SHAPE_CATEGORY[
             config[SHAPE_CATEGORY_CONF_KEY]
         ]
         config[UTTERANCE_KEY_CONF_KEY] = UTTERANCE_KEY[config[UTTERANCE_KEY_CONF_KEY]]
+        config[PREV_CHECKPOINT_PATH] = prev_checkpoint_path
         args = argparse.Namespace(**run.config)
-        output_dir = os.path.join(args.base_dir, RUNS, name)
-        checkpoints_dir = os.path.join(output_dir, CHECKPOINTS)
-        checkpoint_path = sorted(
-            [os.path.join(checkpoints_dir, f) for f in os.listdir(checkpoints_dir)],
-            key=os.path.getmtime,
-            reverse=True,
-        )[0]
+
+    name = build_name(args)
+    output_dir = os.path.join(args.base_dir, RUNS, name)
+    os.makedirs(output_dir, exist_ok=True)
+    checkpoints_dir = os.path.join(output_dir, CHECKPOINTS)
+    if log_wandb:
         os.environ[WANDB_DIR] = output_dir
-        wandb.init(project=wandb_project, id=run_id, resume="allow")
-    else:
-        name = build_name(args)
-        output_dir = os.path.join(args.base_dir, RUNS, name)
-        os.makedirs(output_dir, exist_ok=True)
-        checkpoints_dir = os.path.join(output_dir, CHECKPOINTS)
-        checkpoint_path = None
-        if log_wandb:
-            os.environ[WANDB_DIR] = output_dir
-            wandb.init(project=args.wandb_project, name=name, config=vars(args))
+        wandb.init(project=args.wandb_project, name=name, config=vars(args))
 
     shapetalk_df = pd.read_csv(SHAPETALK_CSV_PATH, index_col=ID)
     shapetalk_df = shapetalk_df[
@@ -151,9 +152,9 @@ def main(args: argparse.Namespace, device: torch.device):
         VAL_DATALOADER: val_dataloader,
         COND_DROP_PROB: args.cond_drop_prob,
     }
-    if checkpoint_path is not None:
-        model_kwargs[VAL_DATALOADER] = None
-        model_kwargs[CHECKPOINT_PATH] = checkpoint_path
+    if prev_checkpoint_path is not None:
+        model_kwargs[INIT_VAL_DATA] = False
+        model_kwargs[CHECKPOINT_PATH] = prev_checkpoint_path
         model = PEPSI.load_from_checkpoint(**model_kwargs)
     else:
         model = PEPSI(**model_kwargs)
@@ -177,7 +178,7 @@ def main(args: argparse.Namespace, device: torch.device):
     )
     trainer.fit(
         model=model,
-        ckpt_path=checkpoint_path,
+        ckpt_path=prev_checkpoint_path,
         val_dataloaders=val_dataloader,
         train_dataloaders=train_dataloader,
     )

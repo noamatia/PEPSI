@@ -23,6 +23,7 @@ class PEPSI(pl.LightningModule):
         copy_prompt: str,
         dev: torch.device,
         cond_drop_prob: float,
+        init_val_data: bool = True,
         val_dataloader: Optional[DataLoader] = None,
     ):
         super().__init__()
@@ -33,7 +34,7 @@ class PEPSI(pl.LightningModule):
         self.batch_size = batch_size
         self.copy_prompt = copy_prompt
         self._init_model(cond_drop_prob)
-        if val_dataloader is not None:
+        if init_val_data and val_dataloader is not None:
             self._init_val_data(val_dataloader)
 
     def _init_model(self, cond_drop_prob: float):
